@@ -1,0 +1,137 @@
+# CI/CD Pipeline
+
+name: Shell Commands AI Skill CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mandoc groff
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r api/requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run parser tests
+        run: |
+          python -m pytest tests/test_parser.py -v
+
+      - name: Run index tests
+        run: |
+          python -m pytest tests/test_index.py -v
+
+      - name: Run API tests
+        run: |
+          python -m pytest tests/test_api.py -v
+
+  build-index:
+    name: Build Search Index
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mandoc groff
+          pip install -r api/requirements.txt
+
+      - name: Fetch man pages
+        run: |
+          ./scripts/fetch_man.sh
+
+      - name: Parse man pages
+        run: |
+          python3 scripts/parse_man.py data/raw data/parsed
+
+      - name: Build search index
+        run: |
+          python3 scripts/build_index.py data/parsed data/index
+
+      - name: Generate JSON dataset
+        run: |
+          python3 scripts/generate_json.py data/parsed data/parsed
+
+      - name: Upload index artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-index
+          path: |
+            data/index/
+            data/parsed/
+
+  docker:
+    name: Build Sandbox Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build sandbox image
+        run: |
+          docker build -t shell-skill-sandbox ./sandbox
+
+      - name: Test sandbox
+        run: |
+          docker run --rm shell-skill-sandbox "find /workspace -name '*.txt'"
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-index, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download index artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: search-index
+          path: release-data/
+
+      - name: Create release package
+        run: |
+          mkdir -p release
+          cp -r release-data/* release/
+          tar -czf shell-commands-ai-skill-${{ github.sha }}.tar.gz release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: shell-commands-ai-skill-${{ github.sha }}.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

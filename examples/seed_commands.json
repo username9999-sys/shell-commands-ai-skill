@@ -1,0 +1,13 @@
+{
+  "seed_commands": [
+    "ls", "cd", "pwd", "cp", "mv", "rm", "mkdir", "rmdir",
+    "cat", "head", "tail", "less", "more", "find", "grep",
+    "sed", "awk", "sort", "uniq", "cut", "tr", "wc",
+    "chmod", "chown", "chgrp", "tar", "gzip", "gunzip",
+    "ssh", "scp", "rsync", "curl", "wget", "git",
+    "ps", "top", "kill", "jobs", "bg", "fg", "nohup",
+    "df", "du", "free", "uptime", "whoami", "id",
+    "date", "cal", "history", "alias", "export",
+    "sudo", "su", "passwd", "man", "info"
+  ]
+}
