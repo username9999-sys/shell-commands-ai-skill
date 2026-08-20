@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# fetch_man.sh - Fetch man pages for commands
-# Usage: ./fetch_man.sh [command...] or ./fetch_man.sh --list <file>
+# fetch_man.sh - Fetch man pages for commands (parallel)
+# Usage: ./fetch_man.sh [command...] or ./fetch_man.sh --list <file> or ./fetch_man.sh --parallel N
 
 set -euo pipefail
 
@@ -25,6 +25,25 @@ DEFAULT_COMMANDS=(
     git make cmake gcc g++ clang python3 node
     docker kubectl helm terraform ansible
 )
+
+# Default parallelism
+PARALLEL_JOBS=4
+
+show_usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS] [command...]
+
+Options:
+  -p, --parallel N    Number of parallel jobs (default: 4)
+  -l, --list FILE     Read commands from file (one per line)
+  -h, --help          Show this help
+
+Examples:
+  $0                           # Fetch default commands with 4 parallel jobs
+  $0 -p 8 find grep ls         # Fetch 3 commands with 8 parallel jobs
+  $0 --list commands.txt       # Fetch commands from file
+EOF
+}
 
 fetch_local() {
     local cmd="$1"
@@ -92,30 +111,79 @@ fetch_command() {
     fi
 }
 
+# Export functions for parallel execution
+export -f fetch_local fetch_man7 fetch_gnu fetch_command
+export RAW_DIR MAN7_BASE GNU_BASE
+
 # Main
-COMMANDS=("${@:-${DEFAULT_COMMANDS[@]}}")
-
-echo "Fetching man pages for ${#COMMANDS[@]} commands..."
-echo "Output directory: $RAW_DIR"
-echo
-
-failed=0
-for cmd in "${COMMANDS[@]}"; do
-    if ! fetch_command "$cmd"; then
-        ((failed++))
+parse_args() {
+    COMMANDS=()
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -p|--parallel)
+                PARALLEL_JOBS="$2"
+                shift 2
+                ;;
+            -l|--list)
+                if [[ -f "$2" ]]; then
+                    mapfile -t COMMANDS < "$2"
+                else
+                    echo "Error: File $2 not found" >&2
+                    exit 1
+                fi
+                shift 2
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                COMMANDS+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Use defaults if no commands provided
+    if [[ ${#COMMANDS[@]} -eq 0 ]]; then
+        COMMANDS=("${DEFAULT_COMMANDS[@]}")
     fi
-    sleep 0.1  # Be nice to servers
-done
+}
 
-echo
-echo "Done. Failed: $failed/${#COMMANDS[@]}"
-
-# Create metadata
-cat > "$RAW_DIR/.metadata.json" <<EOF
+main() {
+    parse_args "$@"
+    
+    echo "Fetching man pages for ${#COMMANDS[@]} commands with $PARALLEL_JOBS parallel jobs..."
+    echo "Output directory: $RAW_DIR"
+    echo
+    
+    mkdir -p "$RAW_DIR"
+    
+    # Use xargs for parallel execution
+    printf '%s\n' "${COMMANDS[@]}" | xargs -P "$PARALLEL_JOBS" -I {} bash -c 'fetch_command "$@"' _ {}
+    
+    # Count failures
+    failed=0
+    for cmd in "${COMMANDS[@]}"; do
+        if [[ ! -s "$RAW_DIR/$cmd.txt" ]]; then
+            ((failed++))
+        fi
+    done
+    
+    echo
+    echo "Done. Failed: $failed/${#COMMANDS[@]}"
+    
+    # Create metadata
+    cat > "$RAW_DIR/.metadata.json" <<EOF
 {
     "fetched_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "total": ${#COMMANDS[@]},
     "failed": $failed,
+    "parallel_jobs": $PARALLEL_JOBS,
     "commands": $(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -s .)
 }
 EOF
+}
+
+main "$@"

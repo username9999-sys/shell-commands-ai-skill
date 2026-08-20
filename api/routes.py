@@ -8,7 +8,8 @@ from .schemas import (
     Command, CommandCreate, CommandUpdate,
     SearchRequest, ExplainRequest, ListCommandsRequest,
     PaginatedResponse, SummaryResponse, CategorySummary,
-    HealthResponse, RiskLevel
+    HealthResponse, RiskLevel,
+    RunExampleRequest, RunExampleResponse
 )
 
 router = APIRouter()
@@ -47,9 +48,11 @@ def get_db():
     return sqlite3.connect(DB_PATH)
 
 
-@router.on_event("startup")
-async def startup():
-    load_commands_cache()
+# Initialize cache on module load
+load_commands_cache()
+
+
+router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -73,7 +76,6 @@ async def list_commands(
     order: str = Query("asc", pattern="^(asc|desc)$")
 ):
     """List commands with pagination and filtering."""
-    load_commands_cache()
     
     filtered = list(_commands_cache.values())
     
@@ -101,8 +103,6 @@ async def list_commands(
 @router.get("/commands/{name}", response_model=Command)
 async def get_command(name: str):
     """Get a specific command by name."""
-    load_commands_cache()
-    
     if name not in _commands_cache:
         raise HTTPException(status_code=404, detail=f"Command '{name}' not found")
     
@@ -112,8 +112,6 @@ async def get_command(name: str):
 @router.post("/commands", response_model=Command, status_code=201)
 async def create_command(command: CommandCreate):
     """Create a new command entry."""
-    load_commands_cache()
-    
     if command.name in _commands_cache:
         raise HTTPException(status_code=409, detail=f"Command '{command.name}' already exists")
     
@@ -131,8 +129,6 @@ async def create_command(command: CommandCreate):
 @router.patch("/commands/{name}", response_model=Command)
 async def update_command(name: str, update: CommandUpdate):
     """Update a command entry."""
-    load_commands_cache()
-    
     if name not in _commands_cache:
         raise HTTPException(status_code=404, detail=f"Command '{name}' not found")
     
@@ -152,8 +148,6 @@ async def update_command(name: str, update: CommandUpdate):
 @router.delete("/commands/{name}", status_code=204)
 async def delete_command(name: str):
     """Delete a command entry."""
-    load_commands_cache()
-    
     if name not in _commands_cache:
         raise HTTPException(status_code=404, detail=f"Command '{name}' not found")
     
@@ -173,7 +167,6 @@ async def delete_command(name: str):
 @router.post("/search", response_model=PaginatedResponse)
 async def search_commands(request: SearchRequest):
     """Search commands using keyword (BM25) and/or semantic search."""
-    load_commands_cache()
     
     if not DB_PATH.exists():
         # Fallback to simple text search
@@ -261,8 +254,6 @@ async def search_commands(request: SearchRequest):
 @router.post("/explain", response_model=Command)
 async def explain_command(request: ExplainRequest):
     """Get contextual explanation for a command."""
-    load_commands_cache()
-    
     if request.command not in _commands_cache:
         raise HTTPException(status_code=404, detail=f"Command '{request.command}' not found")
     
@@ -278,8 +269,6 @@ async def explain_command(request: ExplainRequest):
 @router.get("/categories", response_model=List[CategorySummary])
 async def get_categories():
     """Get all categories with command counts."""
-    load_commands_cache()
-    
     return [
         CategorySummary(category=cat, count=count)
         for cat, count in sorted(_categories_cache.items())
@@ -289,8 +278,6 @@ async def get_categories():
 @router.get("/summary", response_model=SummaryResponse)
 async def get_summary():
     """Get overall summary statistics."""
-    load_commands_cache()
-    
     return SummaryResponse(
         total_commands=len(_commands_cache),
         categories=[
@@ -298,4 +285,48 @@ async def get_summary():
             for cat, count in sorted(_categories_cache.items())
         ],
         generated_at=__import__("datetime").datetime.utcnow().isoformat() + "Z"
+    )
+
+
+@router.post("/run-example", response_model=RunExampleResponse)
+async def run_example(request: RunExampleRequest):
+    """Execute a command example in the sandbox."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from sandbox.sandbox_manager import run_in_sandbox
+    
+    if request.command not in _commands_cache:
+        raise HTTPException(status_code=404, detail=f"Command '{request.command}' not found")
+    
+    # Safety check
+    if request.safety == "safe":
+        cmd_data = _commands_cache[request.command]
+        # Check if any example is destructive
+        for ex in cmd_data.get("examples", []):
+            if ex.get("destructive", False):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Command '{request.command}' has destructive examples. Use safety=allow-risky-examples to override."
+                )
+    
+    # Execute in sandbox
+    try:
+        result = run_in_sandbox(
+            command=request.command,
+            args=request.args,
+            timeout=request.timeout,
+            cwd=request.cwd
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sandbox execution failed: {str(e)}")
+    
+    return RunExampleResponse(
+        exit_code=result["exit_code"],
+        stdout=result["stdout"],
+        stderr=result["stderr"],
+        timeout=result["timeout"],
+        error=result["error"],
+        command=request.command,
+        args=request.args
     )

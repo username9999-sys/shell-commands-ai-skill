@@ -110,3 +110,22 @@ class HealthResponse(BaseModel):
     version: str
     commands_indexed: int
     index_updated_at: str
+
+
+class RunExampleRequest(BaseModel):
+    command: str
+    args: List[str] = []
+    timeout: int = Field(default=30, ge=1, le=300)
+    cwd: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+    safety: SafetyLevel = SafetyLevel.SAFE
+
+
+class RunExampleResponse(BaseModel):
+    exit_code: int
+    stdout: str
+    stderr: str
+    timeout: bool = False
+    error: Optional[str] = None
+    command: str
+    args: List[str]

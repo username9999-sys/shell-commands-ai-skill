@@ -14,9 +14,11 @@ try:
     import numpy as np
     from sentence_transformers import SentenceTransformer
     HAS_EMBEDDINGS = True
-except ImportError:
+    FAISS_IMPORT_ERROR = None
+except ImportError as e:
     HAS_EMBEDDINGS = False
-    print("Warning: sentence-transformers/faiss not installed. Only BM25 index will be built.")
+    FAISS_IMPORT_ERROR = str(e)
+    print(f"Warning: sentence-transformers/faiss not installed. Only BM25 index will be built. Error: {e}")
 
 
 def build_bm25_index(parsed_dir: Path, index_dir: Path):
@@ -63,7 +65,7 @@ def build_bm25_index(parsed_dir: Path, index_dir: Path):
         examples_text = ' '.join([e['code'] + ' ' + e.get('explain', '') for e in cmd.get('examples', [])])
         related_text = ' '.join(cmd.get('related_commands', []))
         
-        conn.execute("""
+        cursor = conn.execute("""
             INSERT INTO commands (name, category, one_line, usage, options, examples, related, risk_level, safety, source, json_data)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -73,7 +75,7 @@ def build_bm25_index(parsed_dir: Path, index_dir: Path):
             json.dumps(cmd)
         ))
         
-        rowid = conn.lastrowid
+        rowid = cursor.lastrowid
         conn.execute("""
             INSERT INTO commands_fts (rowid, name, category, one_line, usage, options, examples, related)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
